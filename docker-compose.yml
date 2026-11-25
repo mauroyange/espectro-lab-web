@@ -1,0 +1,21 @@
+services:
+  espectrolab-web:
+    build: .
+    restart: unless-stopped
+    networks:
+      - root_default
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.espectrolab-site.rule=Host(`espectrolab.ao`) || Host(`www.espectrolab.ao`)"
+      - "traefik.http.routers.espectrolab-site.entrypoints=websecure"
+      - "traefik.http.routers.espectrolab-site.tls=true"
+      - "traefik.http.routers.espectrolab-site.tls.certresolver=mytlschallenge"
+      - "traefik.http.routers.espectrolab-app.rule=Host(`app.espectrolab.ao`)"
+      - "traefik.http.routers.espectrolab-app.entrypoints=websecure"
+      - "traefik.http.routers.espectrolab-app.tls=true"
+      - "traefik.http.routers.espectrolab-app.tls.certresolver=mytlschallenge"
+      - "traefik.http.services.espectrolab-web.loadbalancer.server.port=80"
+
+networks:
+  root_default:
+    external: true

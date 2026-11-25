@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="pt-AO">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Plataforma — Espectro LAB</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700..800&family=Lexend:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="/shared/tokens.css">
+  <script src="/shared/config.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+  <a class="skip-link" href="#appRoot">Saltar para a área de trabalho</a>
+  <div id="appRoot"></div>
+  <script>
+    const CFG = window.ESPECTRO_CONFIG;
+    const sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseAnonKey);
+    const STATE = { session: null, pessoa: null, tab: (location.hash.replace('#', '') || 'inicio'), eventos: [], inscricoes: [], assinatura: null, paginasUsadas: 0, grupos: [], pedidos: [], materiais: [], adminInscricoes: [], otpEmail: '', otpSent: false, msg: null, err: null };
+    function esc(s) { return String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+    function fmtKz(v) { return Number(v || CFG.precoKz).toLocaleString('pt-AO') + ' Kz'; }
+    function setNotice(msg, isErr = false) { STATE.msg = isErr ? null : msg; STATE.err = isErr ? msg : null; render(); }
+
+    async function loadUserData() {
+      if (!STATE.session) return;
+      const uid = STATE.session.user.id;
+      const [pRes, evRes, insRes, assRes, impRes, grpRes, pedRes, matRes] = await Promise.all([
+        sb.from('pessoas').select('*').eq('id', uid).maybeSingle(),
+        sb.from('agenda_publica').select('*').order('inicio', { ascending: true }),
+        sb.from('inscricoes').select('*, eventos(numero, tema, inicio, preco_kz)').eq('pessoa_id', uid).order('reservada_em', { ascending: false }),
+        sb.from('assinaturas').select('*').eq('pessoa_id', uid).order('fim', { ascending: false }).limit(1),
+        sb.from('impressoes').select('paginas').eq('pessoa_id', uid),
+        sb.from('grupos').select('*, grupo_membros(pessoa_id)').order('criado_em', { ascending: false }),
+        sb.from('pedidos').select('*').order('criado_em', { ascending: false }),
+        sb.from('materiais').select('*').order('criado_em', { ascending: false })
+      ]);
+      STATE.pessoa = pRes.data || null;
+      STATE.eventos = evRes.data || [];
+      STATE.inscricoes = insRes.data || [];
+      STATE.assinatura = (assRes.data && assRes.data[0]) || null;
+      STATE.paginasUsadas = (impRes.data || []).reduce((acc, r) => acc + (r.paginas || 0), 0);
+      STATE.grupos = grpRes.data || [];
+      STATE.pedidos = pedRes.data || [];
+      STATE.materiais = matRes.data || [];
+      if (STATE.pessoa && STATE.pessoa.papel === 'admin') {
+        const admIns = await sb.from('inscricoes').select('*, pessoas(nome, email, telefone), eventos(numero, tema, preco_kz)').order('reservada_em', { ascending: false }).limit(40);
+        STATE.adminInscricoes = admIns.data || [];
+      }
+    }
+
+    function renderAuth() {
+      return `<div class="auth-wrap"><div class="card auth-card stack"><div class="space-between"><a href="${CFG.siteUrl}" aria-label="Voltar ao site Espectro LAB">${window.ESPECTRO_LOGO}</a><button type="button" class="btn btn--sec btn--peq" onclick="toggleEspectroTheme()" data-theme-label>Modo escuro</button></div><div><h1 style="font-size:28px">Entrar na plataforma</h1><p class="suave" style="margin-top:6px">Acesso sem palavra-passe: enviamos um código de confirmação para o teu email.</p></div><div class="nota nota--etico"><strong>Zero dados de crianças:</strong> conta exclusiva para adultos (terapeutas, professores e famílias).</div>${STATE.err ? `<div class="nota nota--erro">${esc(STATE.err)}</div>` : ''}${STATE.msg ? `<div class="nota">${esc(STATE.msg)}</div>` : ''}${!STATE.otpSent ? `<form id="otpReqForm" class="stack"><div class="campo"><label for="loginEmail">O teu email</label><input id="loginEmail" type="email" required placeholder="nome@exemplo.com" value="${esc(STATE.otpEmail)}"></div><button type="submit" class="btn">Enviar código por email</button></form>` : `<form id="otpVerForm" class="stack"><p class="suave">Enviámos um código para <strong>${esc(STATE.otpEmail)}</strong>.</p><div class="campo"><label for="otpCode">Código recebido no email</label><input id="otpCode" type="text" inputmode="numeric" autocomplete="one-time-code" required placeholder="123456"></div><div class="row"><button type="submit" class="btn">Confirmar e entrar</button><button type="button" class="btn btn--sec" id="otpBackBtn">Mudar email</button></div></form>`}<p class="suave" style="font-size:13px"><a href="${CFG.siteUrl}">← Voltar para espectrolab.ao</a></p></div></div>`;
+    }
+
+    function renderOnboarding() {
+      return `<div class="auth-wrap"><div class="card auth-card stack" style="max-width:540px"><div>${window.ESPECTRO_LOGO}</div><div><h1 style="font-size:26px">Completa o teu perfil de adulto</h1><p class="suave" style="margin-top:6px">Dados usados exclusivamente para inscrições nos bootcamps e acesso à plataforma (Lei n.º 22/11).</p></div>${STATE.err ? `<div class="nota nota--erro">${esc(STATE.err)}</div>` : ''}<form id="onboardForm" class="stack"><div class="campo"><label for="obNome">Nome completo (adulto)</label><input id="obNome" required></div><div class="grid-2"><div class="campo"><label for="obTel">Telefone / WhatsApp</label><input id="obTel" required placeholder="+244 9XX XXX XXX"></div><div class="campo"><label for="obPerfil">O teu perfil</label><select id="obPerfil" required><option value="terapeuta">Terapeuta</option><option value="professor">Professor</option><option value="familia">Família</option></select></div></div><div class="grid-2"><div class="campo"><label for="obArea">Área / Especialidade (opcional)</label><input id="obArea" placeholder="Ex.: Terapia da fala, Ensino primário"></div><div class="campo"><label for="obProv">Província</label><input id="obProv" value="Luanda" required></div></div><label class="confirma"><input type="checkbox" id="obConsent" required><span>Confirmo que sou maior de 18 anos, aceito a Política de Privacidade (Lei n.º 22/11) e comprometo-me a nunca inserir nomes, fotografias ou dados pessoais/clínicos de crianças na plataforma.</span></label><button type="submit" class="btn">Guardar perfil e entrar</button></form></div></div>`;
+    }
+
+    function renderTabInicio() {
+      const ass = STATE.assinatura;
+      const activa = ass && new Date(ass.fim) >= new Date();
+      const pagRest = Math.max(0, 20 - STATE.paginasUsadas);
+      return `<div class="stack"><div class="space-between"><div><h1 style="font-size:28px">Olá, ${esc(STATE.pessoa.nome)}</h1><div class="row" style="margin-top:8px"><span class="perfil perfil--${esc(STATE.pessoa.perfil)}">${esc(STATE.pessoa.perfil)}</span>${STATE.pessoa.papel !== 'membro' ? `<span class="perfil perfil--${esc(STATE.pessoa.papel)}">${esc(STATE.pessoa.papel)}</span>` : ''}</div></div><span class="selo-etico">Zero dados de crianças</span></div><div class="grid-3"><div class="card stack" style="gap:6px"><span class="rotulo suave">Assinatura 30 dias</span><strong style="font-size:20px">${activa ? 'Activa' : 'Inactiva'}</strong><span class="suave" style="font-size:13px">${ass ? 'Até ' + esc(ass.fim) : 'Reserva um bootcamp (10.000 Kz)'}</span></div><div class="card stack" style="gap:6px"><span class="rotulo suave">Quota de impressão A4</span><strong style="font-size:20px">${pagRest} / 20 pág.</strong><span class="suave" style="font-size:13px">Usadas neste período: ${STATE.paginasUsadas}</span></div><div class="card stack" style="gap:6px"><span class="rotulo suave">Grupos / Materiais</span><strong style="font-size:20px">${STATE.grupos.length} · ${STATE.materiais.length}</strong><span class="suave" style="font-size:13px">Biblioteca LAB-NNN</span></div></div><div class="card stack"><h3>Próximo passo</h3><p class="suave">Participa num bootcamp mensal presencial (<strong>${fmtKz(CFG.precoKz)}</strong>) para activar 30 dias de plataforma, integrar um grupo liderado por terapeuta e produzir materiais com dupla validação clínica.</p><div class="row"><button class="btn btn--peq" onclick="goTab('eventos')">Ver bootcamps e reservas</button><button class="btn btn--sec btn--peq" onclick="goTab('grupo')">O meu grupo e pedidos</button></div></div></div>`;
+    }
+
+    function renderTabEventos() {
+      const b = CFG.billing;
+      return `<div class="stack"><h1 style="font-size:28px">Eventos &amp; Reservas</h1><div class="card stack"><h3>Dados oficiais para transferência bancária</h3><dl class="ref"><dt>Entidade</dt><dd>${esc(b.entidade)}</dd><dt>NIF</dt><dd>${esc(b.nif)}</dd><dt>IBAN</dt><dd>${esc(b.iban)}</dd><dt>Valor</dt><dd>${fmtKz(CFG.precoKz)} (Bootcamp + 30 dias de plataforma + 20 pág. A4)</dd><dt>Apoio WhatsApp</dt><dd>${esc(b.telefone)}</dd></dl><p class="suave" style="font-size:13px">Após reservar, envia o comprovativo em até 48h. Reservas sem comprovativo expiram automaticamente para libertar a vaga.</p></div><div class="stack"><h2>Bootcamps disponíveis</h2>${STATE.eventos.length === 0 ? `<div class="card suave">Ainda não há edições abertas. Assim que o Bootcamp #01 for publicado, aparecerá aqui.</div>` : STATE.eventos.map(ev => `<div class="card space-between"><div class="stack" style="gap:4px"><span class="estado e-${esc(ev.estado)}" style="width:fit-content">${esc(ev.estado)}</span><h3>Bootcamp #${esc(String(ev.numero || 1).padStart(2,'0'))} — ${esc(ev.tema)}</h3><span class="suave">${esc(ev.local || 'Luanda')} · ${ev.inicio ? new Date(ev.inicio).toLocaleDateString('pt-AO') : 'Data a definir'} · ${fmtKz(ev.preco_kz)}</span></div>${ev.estado === 'inscricoes_abertas' ? `<button class="btn btn--peq" onclick="reservarEvento('${esc(ev.id)}')">Reservar (${fmtKz(ev.preco_kz)})</button>` : ''}</div>`).join('')}</div><div class="stack"><h2>As minhas reservas</h2>${STATE.inscricoes.length === 0 ? `<div class="card suave">Ainda não tens reservas registadas.</div>` : STATE.inscricoes.map(ins => `<div class="card stack"><div class="space-between"><strong>Bootcamp #${esc(ins.eventos?.numero || '')} — ${esc(ins.eventos?.tema || '')}</strong><span class="estado e-${esc(ins.estado)}">${esc(ins.estado)}</span></div><span class="suave" style="font-size:13px">Perfil: ${esc(ins.perfil)} · Expira em: ${ins.expira_em ? new Date(ins.expira_em).toLocaleString('pt-AO') : '—'}</span>${ins.estado === 'reservada' ? `<form class="row compForm" data-id="${esc(ins.id)}"><input type="file" accept="image/*,.pdf" required style="max-width:280px"><button type="submit" class="btn btn--peq">Enviar comprovativo</button></form>` : (ins.comprovativo ? `<span class="suave" style="font-size:13px">Comprovativo enviado — aguarda confirmação da administração.</span>` : '')}</div>`).join('')}</div></div>`;
+    }
+
+    function renderTabGrupo() {
+      const grpOptions = STATE.grupos.map(g => `<option value="${esc(g.id)}">${esc(g.nome)}</option>`).join('');
+      return `<div class="stack"><h1 style="font-size:28px">O Meu Grupo &amp; Pedidos</h1><div class="nota nota--etico"><strong>Regra ética obrigatória:</strong> descreve apenas o objectivo pedagógico de forma genérica. Nunca incluas nomes, datas de nascimento, escolas, fotografias ou diagnósticos de crianças.</div>${STATE.grupos.length > 0 ? `<div class="card stack"><h3>Novo pedido para o grupo</h3><form id="novoPedidoForm" class="stack"><div class="grid-2"><div class="campo"><label for="pedGrupo">Grupo</label><select id="pedGrupo" required>${grpOptions}</select></div><div class="campo"><label for="pedFaixa">Faixa etária genérica</label><select id="pedFaixa" required><option value="3 a 5 anos">3 a 5 anos</option><option value="6 a 8 anos">6 a 8 anos</option><option value="9 a 12 anos">9 a 12 anos</option><option value="Adolescentes">Adolescentes</option></select></div></div><div class="campo"><label for="pedTitulo">Título do material</label><input id="pedTitulo" required placeholder="Ex.: Cartões visuais de rotina matinal"></div><div class="campo"><label for="pedObj">Objectivo pedagógico genérico</label><textarea id="pedObj" required placeholder="Descreve o objectivo sem qualquer dado identificável de crianças."></textarea></div><label class="confirma"><input type="checkbox" id="pedSemDados" required><span>Confirmo que este pedido não contém nomes, fotografias nem dados pessoais ou clínicos de crianças.</span></label><button type="submit" class="btn">Submeter pedido para 1.ª validação clínica</button></form></div>` : `<div class="card suave">Ainda não estás associado a um grupo activo. Os grupos (até 5 pessoas liderados por 1 terapeuta) são formados no dia do bootcamp.</div>`}<div class="stack"><h2>Pedidos (${STATE.pedidos.length})</h2>${STATE.pedidos.length === 0 ? `<div class="card suave">Sem pedidos registados ainda.</div>` : STATE.pedidos.map(p => `<div class="card stack" style="gap:8px"><div class="space-between"><strong>${esc(p.titulo)}</strong><span class="estado e-${esc(p.estado)}">${esc(p.estado)}</span></div><p class="suave" style="font-size:14px">${esc(p.objectivo || p.descricao || '')}</p><span class="suave" style="font-size:12.5px">Faixa: ${esc(p.faixa_etaria || '—')} · Sem dados de crianças: ${p.sem_dados_criancas ? 'Confirmado' : '—'}</span></div>`).join('')}</div></div>`;
+    }
+
+    function renderTabBiblio() {
+      return `<div class="stack"><h1 style="font-size:28px">Biblioteca LAB</h1><p class="suave">Materiais com dupla validação clínica concluída (código sequencial LAB-NNN).</p>${STATE.materiais.length === 0 ? `<div class="card suave">Ainda não existem materiais aprovados na biblioteca do teu grupo.</div>` : STATE.materiais.map(m => `<div class="card space-between"><div><span class="rotulo" style="color:var(--atlantico)">${esc(m.numero)}</span><h3>${esc(m.titulo)}</h3></div><span class="estado e-aprovado">Validado</span></div>`).join('')}</div>`;
+    }
+
+    function renderTabConta() {
+      const reduced = localStorage.getItem('el-reduced-motion') === '1';
+      return `<div class="stack"><h1 style="font-size:28px">Conta &amp; Preferências Sensoriais</h1><div class="card stack"><h3>Conforto visual e sensorial</h3><div class="row"><button type="button" class="btn btn--sec" onclick="toggleEspectroTheme()" data-theme-label>Alternar modo claro / escuro</button><button type="button" class="btn btn--sec" id="motionToggleBtn">${reduced ? 'Activar animações suaves' : 'Reduzir movimento'}</button></div></div><div class="card stack"><h3>Os teus dados (adulto)</h3><dl class="ref"><dt>Nome</dt><dd>${esc(STATE.pessoa.nome)}</dd><dt>Email</dt><dd>${esc(STATE.pessoa.email)}</dd><dt>Telefone</dt><dd>${esc(STATE.pessoa.telefone || '—')}</dd><dt>Perfil / Papel</dt><dd>${esc(STATE.pessoa.perfil)} · ${esc(STATE.pessoa.papel)}</dd><dt>Província</dt><dd>${esc(STATE.pessoa.provincia || 'Luanda')}</dd></dl><div><button type="button" class="btn btn--perigo btn--peq" id="logoutBtn">Terminar sessão</button></div></div></div>`;
+    }
+
+    function renderTabAdmin() {
+      return `<div class="stack"><h1 style="font-size:28px">Administração Espectro LAB</h1><div class="card stack"><h3>Criar / Abrir Bootcamp (aparece em espectrolab.ao)</h3><form id="adminEventoForm" class="stack"><div class="grid-2"><div class="campo"><label for="evNum">Número da edição</label><input id="evNum" type="number" value="1" required></div><div class="campo"><label for="evPreco">Preço (Kz)</label><input id="evPreco" type="number" value="${CFG.precoKz}" required></div></div><div class="campo"><label for="evTema">Tema do Bootcamp</label><input id="evTema" required placeholder="Ex.: Ferramentas Visuais e IA para Terapia e Sala de Aula"></div><div class="grid-2"><div class="campo"><label for="evInicio">Data e hora de início</label><input id="evInicio" type="datetime-local" required></div><div class="campo"><label for="evLocal">Local</label><input id="evLocal" value="Luanda" required></div></div><div class="grid-3"><div class="campo"><label for="evVT">Vagas Terapeutas</label><input id="evVT" type="number" value="10" required></div><div class="campo"><label for="evVP">Vagas Professores</label><input id="evVP" type="number" value="10" required></div><div class="campo"><label for="evVF">Vagas Famílias</label><input id="evVF" type="number" value="10" required></div></div><div class="campo"><label for="evEstado">Estado</label><select id="evEstado"><option value="inscricoes_abertas">Inscrições abertas (público em espectrolab.ao)</option><option value="rascunho">Rascunho (oculto no site)</option></select></div><button type="submit" class="btn">Publicar Bootcamp</button></form></div><div class="stack"><h2>Inscrições e Comprovativos (${STATE.adminInscricoes.length})</h2>${STATE.adminInscricoes.length === 0 ? `<div class="card suave">Nenhuma inscrição recebida ainda.</div>` : STATE.adminInscricoes.map(ins => `<div class="card space-between"><div class="stack" style="gap:4px"><strong>${esc(ins.pessoas?.nome || ins.pessoa_id)} (${esc(ins.perfil)})</strong><span class="suave" style="font-size:13px">${esc(ins.pessoas?.email || '')} · Bootcamp #${esc(ins.eventos?.numero || '')} · Estado: ${esc(ins.estado)}</span></div><div class="row">${ins.estado !== 'confirmada' ? `<button class="btn btn--peq" onclick="confirmarPagamentoAdmin('${esc(ins.id)}')">Confirmar pagamento (30 dias)</button>` : `<span class="estado e-confirmada">Confirmada</span>`}</div></div>`).join('')}</div></div>`;
+    }
+
+    function renderApp() {
+      const isAdmin = STATE.pessoa && STATE.pessoa.papel === 'admin';
+      const tabs = [['inicio','Início'],['eventos','Eventos & Reserva'],['grupo','Grupo & Pedidos'],['biblio','Biblioteca LAB'],['conta','Conta & Sensorial']];
+      if (isAdmin) tabs.push(['admin', 'Administração']);
+      let body = '';
+      if (STATE.tab === 'eventos') body = renderTabEventos();
+      else if (STATE.tab === 'grupo') body = renderTabGrupo();
+      else if (STATE.tab === 'biblio') body = renderTabBiblio();
+      else if (STATE.tab === 'conta') body = renderTabConta();
+      else if (STATE.tab === 'admin' && isAdmin) body = renderTabAdmin();
+      else body = renderTabInicio();
+      return `<div class="app-shell"><aside class="app-nav" aria-label="Navegação da plataforma"><a href="${CFG.siteUrl}" style="margin-bottom:12px" aria-label="Espectro LAB">${window.ESPECTRO_LOGO}</a>${tabs.map(([id, label]) => `<button type="button" class="app-nav-btn" aria-current="${STATE.tab === id ? 'page' : 'false'}" onclick="goTab('${id}')">${label}</button>`).join('')}</aside><main class="app-main">${STATE.err ? `<div class="nota nota--erro" style="margin-bottom:16px">${esc(STATE.err)}</div>` : ''}${STATE.msg ? `<div class="nota" style="margin-bottom:16px">${esc(STATE.msg)}</div>` : ''}${body}</main></div>`;
+    }
+
+    function render() {
+      const root = document.getElementById('appRoot');
+      if (!STATE.session) root.innerHTML = renderAuth();
+      else if (!STATE.pessoa) root.innerHTML = renderOnboarding();
+      else root.innerHTML = renderApp();
+      bindEvents();
+    }
+
+    window.goTab = function(t) { STATE.tab = t; STATE.msg = null; STATE.err = null; location.hash = t; render(); };
+    window.reservarEvento = async function(eventoId) {
+      const exp = new Date(Date.now() + 48 * 3600 * 1000).toISOString();
+      const { error } = await sb.from('inscricoes').insert({ evento_id: eventoId, pessoa_id: STATE.session.user.id, perfil: STATE.pessoa.perfil, estado: 'reservada', expira_em: exp });
+      if (error) return setNotice(error.message, true);
+      await loadUserData();
+      setNotice('Reserva criada! Envia o comprovativo de 10.000 Kz dentro de 48h.');
+    };
+    window.confirmarPagamentoAdmin = async function(inscricaoId) {
+      const { error } = await sb.rpc('confirmar_pagamento', { inscr: inscricaoId });
+      if (error) return setNotice(error.message, true);
+      await loadUserData();
+      setNotice('Pagamento confirmado e assinatura de 30 dias activada!');
+    };
+
+    function bindEvents() {
+      const reqForm = document.getElementById('otpReqForm');
+      if (reqForm) reqForm.onsubmit = async (e) => {
+        e.preventDefault();
+        const email = document.getElementById('loginEmail').value.trim();
+        STATE.otpEmail = email;
+        const { error } = await sb.auth.signInWithOtp({ email, options: { shouldCreateUser: true } });
+        if (error) return setNotice(error.message, true);
+        STATE.otpSent = true;
+        setNotice('Código enviado! Verifica a tua caixa de entrada (ou spam).');
+      };
+      const verForm = document.getElementById('otpVerForm');
+      if (verForm) verForm.onsubmit = async (e) => {
+        e.preventDefault();
+        const token = document.getElementById('otpCode').value.trim();
+        const { data, error } = await sb.auth.verifyOtp({ email: STATE.otpEmail, token, type: 'email' });
+        if (error) return setNotice(error.message, true);
+        STATE.session = data.session;
+        await loadUserData();
+        STATE.msg = null; STATE.err = null; render();
+      };
+      const backBtn = document.getElementById('otpBackBtn');
+      if (backBtn) backBtn.onclick = () => { STATE.otpSent = false; STATE.msg = null; STATE.err = null; render(); };
+      const obForm = document.getElementById('onboardForm');
+      if (obForm) obForm.onsubmit = async (e) => {
+        e.preventDefault();
+        const { error } = await sb.from('pessoas').insert({ id: STATE.session.user.id, nome: document.getElementById('obNome').value.trim(), email: STATE.session.user.email, telefone: document.getElementById('obTel').value.trim(), perfil: document.getElementById('obPerfil').value, area: document.getElementById('obArea').value.trim() || null, provincia: document.getElementById('obProv').value.trim() || 'Luanda', consentimento_em: new Date().toISOString() });
+        if (error) return setNotice(error.message, true);
+        await loadUserData(); render();
+      };
+      document.querySelectorAll('.compForm').forEach(f => {
+        f.onsubmit = async (e) => {
+          e.preventDefault();
+          const file = f.querySelector('input[type="file"]').files[0];
+          if (!file) return;
+          const insId = f.dataset.id;
+          const path = `${STATE.session.user.id}/${insId}-${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,'_')}`;
+          const up = await sb.storage.from('comprovativos').upload(path, file, { upsert: true });
+          if (up.error) return setNotice(up.error.message, true);
+          const upd = await sb.from('inscricoes').update({ comprovativo: path, estado: 'comprovativo_enviado' }).eq('id', insId);
+          if (upd.error) return setNotice(upd.error.message, true);
+          await loadUserData(); setNotice('Comprovativo enviado com sucesso!');
+        };
+      });
+      const pedForm = document.getElementById('novoPedidoForm');
+      if (pedForm) pedForm.onsubmit = async (e) => {
+        e.preventDefault();
+        if (!document.getElementById('pedSemDados').checked) return setNotice('Confirmação obrigatória de zero dados de crianças.', true);
+        const { error } = await sb.from('pedidos').insert({ grupo_id: document.getElementById('pedGrupo').value, autor_id: STATE.session.user.id, tipo: 'projecto', titulo: document.getElementById('pedTitulo').value.trim(), objectivo: document.getElementById('pedObj').value.trim(), faixa_etaria: document.getElementById('pedFaixa').value, sem_dados_criancas: true, estado: 'enviado' });
+        if (error) return setNotice(error.message, true);
+        await loadUserData(); setNotice('Pedido submetido para 1.ª validação clínica do terapeuta líder.');
+      };
+      const admForm = document.getElementById('adminEventoForm');
+      if (admForm) admForm.onsubmit = async (e) => {
+        e.preventDefault();
+        const { error } = await sb.from('eventos').insert({ numero: Number(document.getElementById('evNum').value), tema: document.getElementById('evTema').value.trim(), inicio: new Date(document.getElementById('evInicio').value).toISOString(), duracao_horas: 6, local: document.getElementById('evLocal').value.trim(), preco_kz: Number(document.getElementById('evPreco').value), vagas_terapeuta: Number(document.getElementById('evVT').value), vagas_professor: Number(document.getElementById('evVP').value), vagas_familia: Number(document.getElementById('evVF').value), estado: document.getElementById('evEstado').value });
+        if (error) return setNotice(error.message, true);
+        await loadUserData(); setNotice('Bootcamp criado com sucesso! Já está visível na agenda.');
+      };
+      const motBtn = document.getElementById('motionToggleBtn');
+      if (motBtn) motBtn.onclick = () => {
+        const next = localStorage.getItem('el-reduced-motion') === '1' ? '0' : '1';
+        localStorage.setItem('el-reduced-motion', next);
+        if (next === '1') document.documentElement.setAttribute('data-motion', 'reduced');
+        else document.documentElement.removeAttribute('data-motion');
+        render();
+      };
+      const loBtn = document.getElementById('logoutBtn');
+      if (loBtn) loBtn.onclick = async () => { await sb.auth.signOut(); STATE.session = null; STATE.pessoa = null; STATE.otpSent = false; render(); };
+    }
+    (async function boot() {
+      const { data } = await sb.auth.getSession();
+      STATE.session = data.session;
+      if (STATE.session) await loadUserData();
+      render();
+    })();
+  </script>
+</body>
+</html>
